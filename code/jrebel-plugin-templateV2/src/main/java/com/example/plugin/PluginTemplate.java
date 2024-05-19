@@ -5,10 +5,15 @@ import org.zeroturnaround.javarebel.ClassResourceSource;
 import org.zeroturnaround.javarebel.Plugin;
 import org.zeroturnaround.javarebel.*;
 
-import java.net.URISyntaxException;
-import java.text.SimpleDateFormat;
-import java.util.Date;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 /*
 注意: 使用maven assembly 打包，而不是package打包
@@ -28,15 +33,24 @@ jrebel参数配置：https://manuals.jrebel.com/jrebel/misc/agentsettings.html
 public class PluginTemplate implements Plugin {
   private  OkHttpClient okHttpClient;
   private String url;
+  private final static AtomicBoolean locked = new AtomicBoolean(false);
+
+  private final  AtomicReference<List<TimerTask>> tasks = new AtomicReference<>();
+
+  private final  AtomicReference<TimerTask> taskAtomic = new AtomicReference<>();
+  private static Timer timer = new Timer();
 
   public PluginTemplate() {
+    tasks.set(new ArrayList<TimerTask>());
+  }
+
+  private void sendMsg(){
 
   }
 
   private void registryEvent() {
     // 创建ClassEventListener对象
     Reloader reloader = ReloaderFactory.getInstance();
-
 
     reloader.addClassLoadListener(new ClassEventListener() {
       public void onClassEvent(int eventType, Class klass) {
@@ -56,23 +70,43 @@ public class PluginTemplate implements Plugin {
 
     reloader.addClassReloadListener(new ClassEventListener() {
       public void onClassEvent(int eventType, @SuppressWarnings("rawtypes") Class klass) {
-        try {
-          log("addClassReloadListener");
-          log("重新加载了文件:" + klass.getName() + ",eventType:" + eventType);
+        log("onClassEvent begin");
+        TimerTask task = new TimerTask() {
+          @Override
+          public void run() {
+            try {
+              try {
+                // okhtt3 发送消息
+                String json = "{\"action\":\"classes.reload.success\"}";
+                RequestBody body = RequestBody.create(MediaType.parse("application/json"),json);
+                Request request = (new Request.Builder())
+                        .url(url)
+                        .post(body)
+                        .build();
+                Response resp = okHttpClient.newCall(request).execute();
+                log("通知更新代码:"+resp.code());
+                //log("通知-"+url+": " + resp.code() +",");
+              } catch (final Exception e) {
+                log("异常："+e.getMessage());
+              }finally {
+                tasks.get().clear();
+              }
 
-          // okhtt3 发送消息
-          String json = "{\"action\":\"classes.reload.success\"}";
-          RequestBody body = RequestBody.create(MediaType.parse("application/json"),json);
-          Request request = (new Request.Builder())
-                  .url(url)
-                  .post(body)
-                  .addHeader("Content-Type", "application/json")
-                  .build();
-          Response resp = okHttpClient.newCall(request).execute();
-          log("通知::" + resp.code() +",");
-        } catch (final Exception e) {
-          log("异常："+e.getMessage());
+            } catch (final Exception e) {
+              log("异常：" + e.getMessage());
+            }
+          }
+        };
+
+        for (int i = 0; i < tasks.get().size(); i++) {
+          boolean m = tasks.get().get(i).cancel();
         }
+
+        // 600毫秒后执行任务
+        timer.schedule(task, 600);
+        tasks.get().add(task);
+
+        log("重新加载了文件:" + klass.getName() + ",eventType:" + eventType+"");
       }
 
       @Override
